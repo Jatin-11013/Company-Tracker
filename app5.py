@@ -2,13 +2,17 @@ import streamlit as st
 import pandas as pd
 import json, os, hashlib
 from datetime import datetime, date
-import gspread
-from google.oauth2.service_account import Credentials
 from io import BytesIO
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_OK = True
+except ImportError:
+    GSPREAD_OK = False
 
 st.set_page_config(page_title="Placement Report System", page_icon="🎓", layout="wide")
 
-# ─── CONSTANTS ───────────────────────────────────────────────────────────────
 USERS_FILE            = "users.json"
 ADMINS_FILE           = "admins.json"
 DATA_FILE             = "data.json"
@@ -18,7 +22,6 @@ SCHOOL_OPTIONS        = ["SAHS","SAS","SBS","SBSR","SDAP","SET","SHSS","SMFE","S
 PROGRAM_OPTIONS       = ["MSc","BSc","MBA","BTech","BPT","MPT","BBA","MCom","BA","MA"]
 PARTICIPATION_ROUNDS  = ["Round 1","Round 2","Round 3","Round 4","Round 5"]
 
-# ─── PERSISTENCE ─────────────────────────────────────────────────────────────
 def hash_password(pw): return hashlib.sha256(pw.encode()).hexdigest()
 def _load(p): return json.load(open(p)) if os.path.exists(p) else {}
 def _save(p, o):
@@ -31,14 +34,14 @@ def load_data():    return json.load(open(DATA_FILE)) if os.path.exists(DATA_FIL
 def save_data(d):   _save(DATA_FILE, d)
 def is_super_admin(): return st.session_state.get("username") == SUPER_ADMIN_USER
 
-# ─── GOOGLE SHEETS ────────────────────────────────────────────────────────────
 def get_ws():
+    if not GSPREAD_OK: return None
     try:
         creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]),
             scopes=["https://www.googleapis.com/auth/spreadsheets",
                     "https://www.googleapis.com/auth/drive"])
         sh = gspread.authorize(creds).open_by_key(st.secrets["google_sheet"]["sheet_id"])
-        try: return sh.worksheet("PlacementData")
+        try:    return sh.worksheet("PlacementData")
         except: return sh.add_worksheet("PlacementData", 1000, 50)
     except: return None
 
@@ -64,12 +67,10 @@ def excel_bytes(df):
     with pd.ExcelWriter(b, engine="openpyxl") as w: df.to_excel(w,index=False,sheet_name="Report")
     return b.getvalue()
 
-# ─── SESSION ─────────────────────────────────────────────────────────────────
 for k,v in {"logged_in":False,"role":None,"username":None,"page":"login",
             "edit_row_idx":None,"login_role":"Manager","confirm_del":None}.items():
     if k not in st.session_state: st.session_state[k] = v
 
-# ─── CSS ─────────────────────────────────────────────────────────────────────
 st.markdown("""<style>
 .main-header{background:linear-gradient(135deg,#1e3a5f,#2d6a9f);color:white;
   padding:1.5rem 2rem;border-radius:12px;margin-bottom:1.5rem;text-align:center;}
@@ -80,15 +81,9 @@ st.markdown("""<style>
 .metric-box h3{margin:0;color:#1e3a5f;font-size:2rem;}
 .metric-box p{margin:0;color:#5a7fa5;font-size:.85rem;}
 div[data-testid="stButton"]>button{border-radius:8px;font-weight:600;}
-/* tighten action rows */
-.action-row-header{font-size:.72rem;font-weight:700;color:#5a7fa5;
-  padding:4px 2px;border-bottom:2px solid #dde4ef;margin-bottom:2px;}
-.action-cell{font-size:.82rem;padding:3px 2px;}
 </style>""", unsafe_allow_html=True)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# LOGIN
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── LOGIN ────────────────────────────────────────────────────────────────────
 def page_login():
     st.markdown('<div class="main-header"><h1>🎓 Placement Report System</h1><p>Login to continue</p></div>',
                 unsafe_allow_html=True)
@@ -106,7 +101,8 @@ def page_login():
                 st.session_state.login_role="Manager"; st.rerun()
         st.markdown(f"**Logging in as: {st.session_state.login_role}**")
         st.divider()
-        user = st.text_input("Username"); pw = st.text_input("Password", type="password")
+        user = st.text_input("Username")
+        pw   = st.text_input("Password", type="password")
         if st.button("🚀 Login", use_container_width=True, type="primary"):
             if not user or not pw: st.error("Fill both fields."); return
             if st.session_state.login_role == "Admin":
@@ -123,9 +119,7 @@ def page_login():
                     st.session_state.update(logged_in=True,role="manager",username=user,page="manager_home"); st.rerun()
                 else: st.error("❌ Invalid manager credentials.")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SIDEBAR
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 def render_sidebar():
     role=st.session_state.role
     lbl={"super_admin":"Super Admin","admin":"Admin","manager":"Manager"}.get(role,role)
@@ -142,9 +136,12 @@ def render_sidebar():
                 if st.button("🔑 Manage Admins", use_container_width=True):
                     st.session_state.page="manage_admins"; st.rerun()
             if st.button("☁️ Sync Google Sheet", use_container_width=True):
-                d=load_data()
-                if sync_all(d): st.success("✅ Synced!")
-                else: st.info("ℹ️ Configure secrets.toml for Google Sheets.")
+                if not GSPREAD_OK:
+                    st.warning("gspread not installed. Add it to requirements.txt")
+                else:
+                    d=load_data()
+                    if sync_all(d): st.success("✅ Synced!")
+                    else: st.info("ℹ️ Configure secrets.toml for Google Sheets.")
         else:
             for pg,ic,tx in [("manager_home","🏠","Home"),
                               ("data_entry","➕","New Entry"),
@@ -156,9 +153,7 @@ def render_sidebar():
             for k in list(st.session_state.keys()): del st.session_state[k]
             st.rerun()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ADMIN DASHBOARD
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── ADMIN DASHBOARD ──────────────────────────────────────────────────────────
 def page_admin_home():
     lbl="Super Admin" if is_super_admin() else "Admin"
     st.markdown(f'<div class="main-header"><h1>🏠 {lbl} Dashboard</h1></div>',unsafe_allow_html=True)
@@ -177,17 +172,18 @@ def page_admin_home():
         st.dataframe(df.tail(10),use_container_width=True,hide_index=True)
         st.divider()
         c1,c2=st.columns(2)
-        with c1: st.download_button("⬇️ Download All (Excel)",excel_bytes(df),
-            file_name="all_placement_data.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+        with c1:
+            st.download_button("⬇️ Download All (Excel)",excel_bytes(df),
+                file_name="all_placement_data.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
         with c2:
             if st.button("☁️ Sync All to Google Sheet",use_container_width=True,type="primary"):
-                if sync_all(data): st.success("✅ Synced!")
+                if not GSPREAD_OK: st.warning("gspread not installed.")
+                elif sync_all(data): st.success("✅ Synced!")
                 else: st.info("ℹ️ Add Google Sheets credentials in secrets.toml")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# USER MANAGEMENT (shared logic)
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── USER MANAGEMENT ──────────────────────────────────────────────────────────
 def user_mgmt_ui(users, singular, save_fn, reserved):
     st.subheader(f"➕ Add New {singular}")
     with st.form(f"add_{singular}"):
@@ -211,7 +207,9 @@ def user_mgmt_ui(users, singular, save_fn, reserved):
             with st.popover("🔑 Change PW"):
                 pw2=st.text_input("New PW",type="password",key=f"pw_{singular}_{uname}")
                 if st.button("Update",key=f"upd_{singular}_{uname}"):
-                    if pw2: users[uname]["password"]=hash_password(pw2); save_fn(users); st.success("Updated!"); st.rerun()
+                    if pw2:
+                        users[uname]["password"]=hash_password(pw2)
+                        save_fn(users); st.success("Updated!"); st.rerun()
         with c4:
             if st.button("🗑️ Remove",key=f"rm_{singular}_{uname}"):
                 del users[uname]; save_fn(users); st.success(f"Removed {uname}"); st.rerun()
@@ -225,9 +223,7 @@ def page_manage_admins():
     st.markdown('<div class="main-header"><h1>🔑 Manage Admins</h1></div>',unsafe_allow_html=True)
     user_mgmt_ui(load_admins(),"Admin",save_admins,set(load_users().keys())|{SUPER_ADMIN_USER})
 
-# ═════════════════════════════════════════════════════════════════════════════
-# DATA ENTRY
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── DATA ENTRY ───────────────────────────────────────────────────────────────
 def data_entry_form(prefill=None, edit_idx=None):
     p=prefill or {}; is_edit=edit_idx is not None
     st.markdown(f'<div class="main-header"><h1>{"✏️ Edit Entry" if is_edit else "➕ New Data Entry"}</h1></div>',
@@ -334,9 +330,7 @@ def data_entry_form(prefill=None, edit_idx=None):
         save_data(data)
         st.session_state.page="preview"; st.session_state.edit_row_idx=None; st.rerun()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PREVIEW — combined table with inline Edit / Delete
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── PREVIEW ──────────────────────────────────────────────────────────────────
 def page_preview(admin_view=False):
     title="📋 All Reports" if admin_view else "📋 My Reports"
     st.markdown(f'<div class="main-header"><h1>{title}</h1></div>',unsafe_allow_html=True)
@@ -349,10 +343,10 @@ def page_preview(admin_view=False):
         df=df[df["Submitted By"]==st.session_state.username].reset_index(drop=True)
         if df.empty:
             st.info("No entries yet.")
-            if st.button("➕ Add New Entry",type="primary"): st.session_state.page="data_entry"; st.rerun()
+            if st.button("➕ Add New Entry",type="primary"):
+                st.session_state.page="data_entry"; st.rerun()
             return
 
-    # ── FILTERS ──────────────────────────────────────────────────────────────
     with st.expander("🔍 Filter Data",expanded=False):
         st.markdown("**Text Search**")
         t1,t2,t3,t4=st.columns(4)
@@ -373,7 +367,7 @@ def page_preview(admin_view=False):
         with d2: f_ba=st.selectbox("Batch",["All","2025-2026","2026-2027","2027-2028"])
         with d3: f_fb=st.selectbox("Floated By",["All","Superset","Google Form"])
         with d4: f_ot=st.selectbox("Opportunity Type",["All","Full Time","Intern cum PPO","Only Internship"])
-        d5,d6,d7,d8=st.columns(4)
+        d5,d6,d7,_=st.columns(4)
         with d5: f_cn=st.selectbox("Core/Non-Core",["All","Core","Non-Core"])
         with d6: f_se=st.selectbox("Selection Email",["All","Yes","No"])
         with d7:
@@ -381,7 +375,6 @@ def page_preview(admin_view=False):
                 mgrs=["All"]+sorted(df["Submitted By"].unique().tolist())
                 f_sb=st.selectbox("Submitted By",mgrs)
             else: f_sb="All"
-        with d8: pass
         st.markdown("**Date Filters**")
         dr1,dr2,dr3,dr4=st.columns(4)
         with dr1: f_fdf=st.date_input("Floated From",value=None,key="fdf")
@@ -438,7 +431,7 @@ def page_preview(admin_view=False):
 
     can_modify=(st.session_state.role=="manager")
 
-    # ── Delete confirmation popup ─────────────────────────────────────────────
+    # Delete confirmation
     if st.session_state.confirm_del is not None:
         oi=st.session_state.confirm_del
         all_d=load_data()
@@ -454,78 +447,64 @@ def page_preview(admin_view=False):
                 st.session_state.confirm_del=None; st.rerun()
         st.divider()
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # COMBINED TABLE — all data columns + Edit/Delete at the end of each row
-    # Uses st.columns per row (Streamlit's only way to have buttons in a table)
-    # ═══════════════════════════════════════════════════════════════════════
-    all_data_cols=list(disp.columns)
-
-    # Fixed column widths for the key visible columns
-    # We'll show a compact set of cols; user can download Excel for full view
+    # Columns to show in the table
     SHOW_COLS=[
-        ("Company Name",       2.0),
-        ("Floated Date",       1.2),
-        ("Batch",              1.0),
-        ("Opportunity Type",   1.4),
-        ("Core/Non-Core",      0.9),
-        ("CTC (LPA)",          0.9),
-        ("Company Current Status", 1.3),
-        ("School",             1.5),
-        ("Program",            1.2),
-        ("Final Selection",    1.0),
-        ("Submitted By",       1.1),
+        ("Company Name",          2.0),
+        ("Floated Date",          1.1),
+        ("Batch",                 0.9),
+        ("Opportunity Type",      1.3),
+        ("Core/Non-Core",         0.9),
+        ("CTC (LPA)",             0.9),
+        ("Company Current Status",1.3),
+        ("School",                1.4),
+        ("Program",               1.1),
+        ("Final Selection",       0.9),
+        ("Submitted By",          1.0),
     ]
-    # keep only cols that exist
     SHOW_COLS=[(c,w) for c,w in SHOW_COLS if c in disp.columns]
     col_names=[c for c,_ in SHOW_COLS]
     col_widths=[w for _,w in SHOW_COLS]
 
     if can_modify:
-        # Add Edit + Delete column widths
-        all_widths=col_widths+[0.65, 0.65]
-        all_labels=col_names+["Edit","Delete"]
+        all_widths=col_widths+[0.6,0.6]
+        all_labels=col_names+["✏️","🗑️"]
     else:
         all_widths=col_widths
         all_labels=col_names
 
-    # ── Header row ────────────────────────────────────────────────────────────
-    header_cols=st.columns(all_widths)
-    for hc,lbl in zip(header_cols,all_labels):
+    # Header
+    hcols=st.columns(all_widths)
+    for hc,lbl in zip(hcols,all_labels):
         hc.markdown(
             f"<div style='font-size:.72rem;font-weight:700;color:#2d6a9f;"
             f"padding:4px 2px;border-bottom:2px solid #2d6a9f'>{lbl}</div>",
             unsafe_allow_html=True)
 
-    # ── Data rows ─────────────────────────────────────────────────────────────
-    for _, row in flt.iterrows():
+    # Data rows
+    for _,row in flt.iterrows():
         oi=int(row["_oi"])
-        row_cols=st.columns(all_widths)
+        rcols=st.columns(all_widths)
         for ci,cname in enumerate(col_names):
             val=str(row.get(cname,"—"))
-            # truncate long values so row stays compact
-            display_val=val[:28]+"…" if len(val)>28 else val
-            row_cols[ci].markdown(
+            dv=val[:26]+"…" if len(val)>26 else val
+            rcols[ci].markdown(
                 f"<div style='font-size:.80rem;padding:4px 2px;"
                 f"border-bottom:1px solid #eef1f7;line-height:1.3'>"
-                f"<span title='{val}'>{display_val}</span></div>",
+                f"<span title='{val}'>{dv}</span></div>",
                 unsafe_allow_html=True)
         if can_modify:
-            with row_cols[len(col_names)]:
-                if st.button("✏️",key=f"ed_{oi}",use_container_width=True,type="primary",
-                             help="Edit this entry"):
+            with rcols[len(col_names)]:
+                if st.button("✏️",key=f"ed_{oi}",use_container_width=True,type="primary",help="Edit"):
                     st.session_state.edit_row_idx=oi
                     st.session_state.page="edit_entry"; st.rerun()
-            with row_cols[len(col_names)+1]:
-                if st.button("🗑️",key=f"dl_{oi}",use_container_width=True,
-                             help="Delete this entry"):
+            with rcols[len(col_names)+1]:
+                if st.button("🗑️",key=f"dl_{oi}",use_container_width=True,help="Delete"):
                     st.session_state.confirm_del=oi; st.rerun()
 
     st.markdown("<br>",unsafe_allow_html=True)
     st.caption("💡 Hover over any cell to see full value. Download Excel for all columns.")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# MANAGER HOME
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── MANAGER HOME ─────────────────────────────────────────────────────────────
 def page_manager_home():
     uname=st.session_state.username
     name=load_users().get(uname,{}).get("name",uname)
@@ -549,9 +528,7 @@ def page_manager_home():
         if st.button("📋 View My Reports",use_container_width=True):
             st.session_state.page="preview"; st.rerun()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ROUTER
-# ═════════════════════════════════════════════════════════════════════════════
+# ─── ROUTER ───────────────────────────────────────────────────────────────────
 def main():
     if not st.session_state.logged_in: page_login(); return
     render_sidebar()

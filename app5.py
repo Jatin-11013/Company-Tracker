@@ -64,7 +64,13 @@ def sync_all(data):
 
 def excel_bytes(df):
     b = BytesIO()
-    with pd.ExcelWriter(b, engine="openpyxl") as w: df.to_excel(w,index=False,sheet_name="Report")
+    try:
+        with pd.ExcelWriter(b, engine="openpyxl") as w:
+            df.to_excel(w, index=False, sheet_name="Report")
+    except Exception:
+        # fallback to CSV if openpyxl not available
+        b = BytesIO()
+        df.to_csv(b, index=False)
     return b.getvalue()
 
 for k,v in {"logged_in":False,"role":None,"username":None,"page":"login",

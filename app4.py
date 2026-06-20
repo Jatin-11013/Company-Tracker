@@ -13,9 +13,6 @@ except ImportError:
 
 st.set_page_config(page_title="Placement Report System", page_icon="🎓", layout="wide")
 
-USERS_FILE            = "users.json"
-ADMINS_FILE           = "admins.json"
-DATA_FILE             = "data.json"
 SUPER_ADMIN_USER      = "jatin_123"
 SUPER_ADMIN_PASS_HASH = hashlib.sha256("jatin@123".encode()).hexdigest()
 SCHOOL_OPTIONS        = ["SAHS","SAS","SBS","SBSR","SDAP","SET","SHSS","SMFE","SOE","SSCSE"]
@@ -23,44 +20,150 @@ PROGRAM_OPTIONS       = ["MSc","BSc","MBA","BTech","BPT","MPT","BBA","MCom","BA"
 PARTICIPATION_ROUNDS  = ["Round 1","Round 2","Round 3","Round 4","Round 5"]
 
 def hash_password(pw): return hashlib.sha256(pw.encode()).hexdigest()
-def _load(p): return json.load(open(p)) if os.path.exists(p) else {}
-def _save(p, o):
-    with open(p,"w") as f: json.dump(o, f, indent=2, default=str)
-def load_users():   return _load(USERS_FILE)
-def save_users(u):  _save(USERS_FILE, u)
-def load_admins():  return _load(ADMINS_FILE)
-def save_admins(a): _save(ADMINS_FILE, a)
-def load_data():    return json.load(open(DATA_FILE)) if os.path.exists(DATA_FILE) else []
-def save_data(d):   _save(DATA_FILE, d)
-def is_super_admin(): return st.session_state.get("username") == SUPER_ADMIN_USER
 
-def get_ws():
-    if not GSPREAD_OK: return None
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SHEETS — single source of truth (no local JSON dependency)
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_resource(show_spinner=False)
+def _get_client():
+    if not GSPREAD_OK:
+        return None
     try:
-        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]),
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
             scopes=["https://www.googleapis.com/auth/spreadsheets",
                     "https://www.googleapis.com/auth/drive"])
-        sh = gspread.authorize(creds).open_by_key(st.secrets["google_sheet"]["sheet_id"])
-        try:    return sh.worksheet("PlacementData")
-        except: return sh.add_worksheet("PlacementData", 1000, 50)
-    except: return None
+        return gspread.authorize(creds)
+    except Exception:
+        return None
 
-def push_row(row):
-    ws = get_ws()
+def _get_spreadsheet():
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        return client.open_by_key(st.secrets["google_sheet"]["sheet_id"])
+    except Exception:
+        return None
+
+def _get_or_create_ws(title, header_row):
+    sh = _get_spreadsheet()
+    if not sh:
+        return None
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        ws = sh.add_worksheet(title=title, rows=2000, cols=max(50, len(header_row)+5))
+        ws.append_row(header_row)
+        return ws
+    # ensure header exists
+    existing = ws.get_all_values()
+    if not existing:
+        ws.append_row(header_row)
+    return ws
+
+SHEETS_CONFIGURED = False
+try:
+    SHEETS_CONFIGURED = "gcp_service_account" in st.secrets and "google_sheet" in st.secrets
+except Exception:
+    SHEETS_CONFIGURED = False
+
+# ── MANAGERS worksheet: username | name | password_hash ─────────────────────
+def load_users():
+    ws = _get_or_create_ws("Managers", ["username", "name", "password"])
+    if not ws: return {}
+    try:
+        rows = ws.get_all_records()
+        return {r["username"]: {"name": r["name"], "password": r["password"]} for r in rows if r.get("username")}
+    except Exception:
+        return {}
+
+def save_users(users: dict):
+    ws = _get_or_create_ws("Managers", ["username", "name", "password"])
     if not ws: return
     try:
-        ex = ws.get_all_values(); h = list(row.keys())
-        if not ex: ws.append_row(h)
-        ws.append_row([str(row.get(k,"")) for k in h])
-    except Exception as e: st.warning(f"Sheet push: {e}")
+        ws.clear()
+        ws.append_row(["username", "name", "password"])
+        for uname, d in users.items():
+            ws.append_row([uname, d["name"], d["password"]])
+    except Exception as e:
+        st.warning(f"Could not save managers to Google Sheet: {e}")
 
-def sync_all(data):
-    ws = get_ws()
-    if not ws or not data: return False
+# ── ADMINS worksheet: username | name | password_hash ────────────────────────
+def load_admins():
+    ws = _get_or_create_ws("Admins", ["username", "name", "password"])
+    if not ws: return {}
     try:
-        df = pd.DataFrame(data); ws.clear()
-        ws.update([df.columns.tolist()] + df.values.tolist()); return True
-    except Exception as e: st.warning(f"Sync: {e}"); return False
+        rows = ws.get_all_records()
+        return {r["username"]: {"name": r["name"], "password": r["password"]} for r in rows if r.get("username")}
+    except Exception:
+        return {}
+
+def save_admins(admins: dict):
+    ws = _get_or_create_ws("Admins", ["username", "name", "password"])
+    if not ws: return
+    try:
+        ws.clear()
+        ws.append_row(["username", "name", "password"])
+        for uname, d in admins.items():
+            ws.append_row([uname, d["name"], d["password"]])
+    except Exception as e:
+        st.warning(f"Could not save admins to Google Sheet: {e}")
+
+# ── PLACEMENT DATA worksheet ──────────────────────────────────────────────────
+DATA_HEADERS = [
+    "Manager Name","Floated Date","Floated By","Opportunity Type","Batch",
+    "Company Name","Core/Non-Core","Company Domain","Job Profile","Job Location",
+    "School","Program","Specialization","CTC (LPA)","Company Current Status",
+    "No. of Positions","No. of Registrations","Interview Date",
+    "Participation Round 1","Participation Round 2","Participation Round 3",
+    "Participation Round 4","Participation Round 5",
+    "Shortlisting Round 1","Shortlisting Round 2","Shortlisting Round 3",
+    "Shortlisting Round 4","Shortlisting Round 5",
+    "Selection Confirmation Email","Final Selection",
+    "Offer Letters Received","Offer Letters Pending","Candidates Joined",
+    "Remarks","Submitted By","Submitted At",
+]
+
+def load_data():
+    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+    if not ws: return []
+    try:
+        rows = ws.get_all_records()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+def save_data(data: list):
+    """Full rewrite of PlacementData sheet — used for edit/delete."""
+    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+    if not ws: return
+    try:
+        ws.clear()
+        if not data:
+            ws.append_row(DATA_HEADERS)
+            return
+        df = pd.DataFrame(data)
+        # ensure all expected headers exist & in correct order
+        for h in DATA_HEADERS:
+            if h not in df.columns:
+                df[h] = ""
+        df = df[DATA_HEADERS]
+        ws.append_row(DATA_HEADERS)
+        ws.append_rows(df.astype(str).values.tolist())
+    except Exception as e:
+        st.warning(f"Could not save data to Google Sheet: {e}")
+
+def push_row(row: dict):
+    """Append a single new row (fast path for new entries)."""
+    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+    if not ws: return
+    try:
+        ws.append_row([str(row.get(h, "")) for h in DATA_HEADERS])
+    except Exception as e:
+        st.warning(f"Could not push entry to Google Sheet: {e}")
+
+def is_super_admin(): return st.session_state.get("username") == SUPER_ADMIN_USER
 
 def excel_bytes(df):
     b = BytesIO()
@@ -68,7 +171,6 @@ def excel_bytes(df):
         with pd.ExcelWriter(b, engine="openpyxl") as w:
             df.to_excel(w, index=False, sheet_name="Report")
     except Exception:
-        # fallback to CSV if openpyxl not available
         b = BytesIO()
         df.to_csv(b, index=False)
     return b.getvalue()
@@ -93,6 +195,8 @@ div[data-testid="stButton"]>button{border-radius:8px;font-weight:600;}
 def page_login():
     st.markdown('<div class="main-header"><h1>🎓 Placement Report System</h1><p>Login to continue</p></div>',
                 unsafe_allow_html=True)
+    if not SHEETS_CONFIGURED:
+        st.error("⚠️ Google Sheets not connected. Add credentials in Streamlit Cloud → Settings → Secrets. Data will NOT be saved permanently until this is configured.")
     _,col,_ = st.columns([1,1.2,1])
     with col:
         st.markdown("### 👤 Login As")
@@ -141,13 +245,10 @@ def render_sidebar():
             if role=="super_admin":
                 if st.button("🔑 Manage Admins", use_container_width=True):
                     st.session_state.page="manage_admins"; st.rerun()
-            if st.button("☁️ Sync Google Sheet", use_container_width=True):
-                if not GSPREAD_OK:
-                    st.warning("gspread not installed. Add it to requirements.txt")
-                else:
-                    d=load_data()
-                    if sync_all(d): st.success("✅ Synced!")
-                    else: st.info("ℹ️ Configure secrets.toml for Google Sheets.")
+            if st.button("🔄 Refresh Data", use_container_width=True):
+                st.cache_resource.clear()
+                st.success("✅ Refreshed!")
+                st.rerun()
         else:
             for pg,ic,tx in [("manager_home","🏠","Home"),
                               ("data_entry","➕","New Entry"),
@@ -184,10 +285,7 @@ def page_admin_home():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
         with c2:
-            if st.button("☁️ Sync All to Google Sheet",use_container_width=True,type="primary"):
-                if not GSPREAD_OK: st.warning("gspread not installed.")
-                elif sync_all(data): st.success("✅ Synced!")
-                else: st.info("ℹ️ Add Google Sheets credentials in secrets.toml")
+            st.info("☁️ Data is live-synced to Google Sheets automatically.")
 
 # ─── USER MANAGEMENT ──────────────────────────────────────────────────────────
 def user_mgmt_ui(users, singular, save_fn, reserved):

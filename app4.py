@@ -176,7 +176,8 @@ def excel_bytes(df):
     return b.getvalue()
 
 for k,v in {"logged_in":False,"role":None,"username":None,"page":"login",
-            "edit_row_idx":None,"login_role":"Manager","confirm_del":None}.items():
+            "edit_row_idx":None,"login_role":"Manager","confirm_del":None,
+            "active_filters":None}.items():
     if k not in st.session_state: st.session_state[k] = v
 
 st.markdown("""<style>
@@ -446,6 +447,10 @@ def page_preview(admin_view=False):
     df=pd.DataFrame(data)
 
     if not admin_view:
+        if "Submitted By" not in df.columns:
+            st.error("⚠️ 'Submitted By' column missing in data. Please check your Google Sheet headers match exactly.")
+            st.write("Columns found:", list(df.columns))
+            return
         df=df[df["Submitted By"]==st.session_state.username].reset_index(drop=True)
         if df.empty:
             st.info("No entries yet.")
@@ -453,76 +458,103 @@ def page_preview(admin_view=False):
                 st.session_state.page="data_entry"; st.rerun()
             return
 
-    with st.expander("🔍 Filter Data",expanded=False):
-        st.markdown("**Text Search**")
-        t1,t2,t3,t4=st.columns(4)
-        with t1: f_co=st.text_input("Company Name")
-        with t2: f_do=st.text_input("Company Domain")
-        with t3: f_jp=st.text_input("Job Profile")
-        with t4: f_jl=st.text_input("Job Location")
-        t5,t6,t7,t8=st.columns(4)
-        with t5: f_mn=st.text_input("Manager Name")
-        with t6: f_sp=st.text_input("Specialization")
-        with t7: f_sc=st.text_input("School contains")
-        with t8: f_pr=st.text_input("Program contains")
-        t9,_,__,___=st.columns(4)
-        with t9: f_re=st.text_input("Remarks contains")
-        st.markdown("**Dropdown Filters**")
-        d1,d2,d3,d4=st.columns(4)
-        with d1: f_st=st.selectbox("Company Status",["All","In Process","Cancelled","Hold","Completed","Postponed"])
-        with d2: f_ba=st.selectbox("Batch",["All","2025-2026","2026-2027","2027-2028"])
-        with d3: f_fb=st.selectbox("Floated By",["All","Superset","Google Form"])
-        with d4: f_ot=st.selectbox("Opportunity Type",["All","Full Time","Intern cum PPO","Only Internship"])
-        d5,d6,d7,_=st.columns(4)
-        with d5: f_cn=st.selectbox("Core/Non-Core",["All","Core","Non-Core"])
-        with d6: f_se=st.selectbox("Selection Email",["All","Yes","No"])
-        with d7:
-            if admin_view:
-                mgrs=["All"]+sorted(df["Submitted By"].unique().tolist())
-                f_sb=st.selectbox("Submitted By",mgrs)
-            else: f_sb="All"
-        st.markdown("**Date Filters**")
-        dr1,dr2,dr3,dr4=st.columns(4)
-        with dr1: f_fdf=st.date_input("Floated From",value=None,key="fdf")
-        with dr2: f_fdt=st.date_input("Floated To",value=None,key="fdt")
-        with dr3: f_idf=st.date_input("Interview From",value=None,key="idf")
-        with dr4: f_idt=st.date_input("Interview To",value=None,key="idt")
-        st.markdown("**Number Filters**")
-        nr1,nr2,nr3,nr4=st.columns(4)
-        with nr1: f_pmn=st.number_input("Min Positions",min_value=0,value=0,step=1)
-        with nr2: f_pmx=st.number_input("Max Positions",min_value=0,value=99999,step=1)
-        with nr3: f_smn=st.number_input("Min Selections",min_value=0,value=0,step=1)
-        with nr4: f_smx=st.number_input("Max Selections",min_value=0,value=99999,step=1)
+    with st.expander("🔍 Filter Data", expanded=False):
+        with st.form("filter_form"):
+            st.markdown("**Text Search**")
+            t1,t2,t3,t4=st.columns(4)
+            with t1: f_co=st.text_input("Company Name")
+            with t2: f_do=st.text_input("Company Domain")
+            with t3: f_jp=st.text_input("Job Profile")
+            with t4: f_jl=st.text_input("Job Location")
+            t5,t6,t7,t8=st.columns(4)
+            with t5: f_mn=st.text_input("Manager Name")
+            with t6: f_sp=st.text_input("Specialization")
+            with t7: f_sc=st.text_input("School contains")
+            with t8: f_pr=st.text_input("Program contains")
+            t9,_,__,___=st.columns(4)
+            with t9: f_re=st.text_input("Remarks contains")
+
+            st.markdown("**Multi-Select Filters** (leave empty = show all)")
+            d1,d2,d3,d4=st.columns(4)
+            with d1: f_st=st.multiselect("Company Status",["In Process","Cancelled","Hold","Completed","Postponed"])
+            with d2: f_ba=st.multiselect("Batch",["2025-2026","2026-2027","2027-2028"])
+            with d3: f_fb=st.multiselect("Floated By",["Superset","Google Form"])
+            with d4: f_ot=st.multiselect("Opportunity Type",["Full Time","Intern cum PPO","Only Internship"])
+            d5,d6,d7,_=st.columns(4)
+            with d5: f_cn=st.multiselect("Core/Non-Core",["Core","Non-Core"])
+            with d6: f_se=st.multiselect("Selection Email",["Yes","No"])
+            with d7:
+                if admin_view:
+                    mgrs=sorted(df["Submitted By"].unique().tolist())
+                    f_sb=st.multiselect("Submitted By",mgrs)
+                else: f_sb=[]
+
+            st.markdown("**Date Filters**")
+            dr1,dr2,dr3,dr4=st.columns(4)
+            with dr1: f_fdf=st.date_input("Floated From",value=None,key="fdf")
+            with dr2: f_fdt=st.date_input("Floated To",value=None,key="fdt")
+            with dr3: f_idf=st.date_input("Interview From",value=None,key="idf")
+            with dr4: f_idt=st.date_input("Interview To",value=None,key="idt")
+
+            st.markdown("**Number Filters**")
+            nr1,nr2,nr3,nr4=st.columns(4)
+            with nr1: f_pmn=st.number_input("Min Positions",min_value=0,value=0,step=1)
+            with nr2: f_pmx=st.number_input("Max Positions",min_value=0,value=99999,step=1)
+            with nr3: f_smn=st.number_input("Min Selections",min_value=0,value=0,step=1)
+            with nr4: f_smx=st.number_input("Max Selections",min_value=0,value=99999,step=1)
+
+            apply_clicked = st.form_submit_button("✅ Apply Filters", type="primary", use_container_width=True)
+
+        if apply_clicked:
+            st.session_state.active_filters = dict(
+                f_co=f_co, f_do=f_do, f_jp=f_jp, f_jl=f_jl, f_mn=f_mn, f_sp=f_sp,
+                f_sc=f_sc, f_pr=f_pr, f_re=f_re, f_st=f_st, f_ba=f_ba, f_fb=f_fb,
+                f_ot=f_ot, f_cn=f_cn, f_se=f_se, f_sb=f_sb,
+                f_fdf=f_fdf, f_fdt=f_fdt, f_idf=f_idf, f_idt=f_idt,
+                f_pmn=f_pmn, f_pmx=f_pmx, f_smn=f_smn, f_smx=f_smx,
+            )
+
+        if st.button("🔄 Clear Filters"):
+            st.session_state.active_filters = None
+            st.rerun()
+
+    # Load saved filter state (persists across reruns triggered by edit/delete buttons)
+    af = st.session_state.get("active_filters")
+    if af is None:
+        af = dict(f_co="",f_do="",f_jp="",f_jl="",f_mn="",f_sp="",f_sc="",f_pr="",f_re="",
+                  f_st=[],f_ba=[],f_fb=[],f_ot=[],f_cn=[],f_se=[],f_sb=[],
+                  f_fdf=None,f_fdt=None,f_idf=None,f_idt=None,
+                  f_pmn=0,f_pmx=99999,f_smn=0,f_smx=99999)
 
     flt=df.copy()
-    if f_co: flt=flt[flt["Company Name"].str.contains(f_co,case=False,na=False)]
-    if f_do: flt=flt[flt["Company Domain"].str.contains(f_do,case=False,na=False)]
-    if f_jp: flt=flt[flt["Job Profile"].str.contains(f_jp,case=False,na=False)]
-    if f_jl: flt=flt[flt["Job Location"].str.contains(f_jl,case=False,na=False)]
-    if f_mn: flt=flt[flt["Manager Name"].str.contains(f_mn,case=False,na=False)]
-    if f_sp: flt=flt[flt["Specialization"].str.contains(f_sp,case=False,na=False)]
-    if f_sc: flt=flt[flt["School"].str.contains(f_sc,case=False,na=False)]
-    if f_pr: flt=flt[flt["Program"].str.contains(f_pr,case=False,na=False)]
-    if f_re: flt=flt[flt["Remarks"].str.contains(f_re,case=False,na=False)]
-    if f_st!="All": flt=flt[flt["Company Current Status"]==f_st]
-    if f_ba!="All": flt=flt[flt["Batch"]==f_ba]
-    if f_fb!="All": flt=flt[flt["Floated By"]==f_fb]
-    if f_ot!="All": flt=flt[flt["Opportunity Type"]==f_ot]
-    if f_cn!="All": flt=flt[flt["Core/Non-Core"]==f_cn]
-    if f_se!="All": flt=flt[flt["Selection Confirmation Email"]==f_se]
-    if f_sb!="All": flt=flt[flt["Submitted By"]==f_sb]
-    if f_fdf and "Floated Date" in flt.columns:
-        flt=flt[pd.to_datetime(flt["Floated Date"],errors="coerce")>=pd.Timestamp(f_fdf)]
-    if f_fdt and "Floated Date" in flt.columns:
-        flt=flt[pd.to_datetime(flt["Floated Date"],errors="coerce")<=pd.Timestamp(f_fdt)]
-    if f_idf and "Interview Date" in flt.columns:
-        flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")>=pd.Timestamp(f_idf)]
-    if f_idt and "Interview Date" in flt.columns:
-        flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")<=pd.Timestamp(f_idt)]
+    if af["f_co"]: flt=flt[flt["Company Name"].str.contains(af["f_co"],case=False,na=False)]
+    if af["f_do"]: flt=flt[flt["Company Domain"].str.contains(af["f_do"],case=False,na=False)]
+    if af["f_jp"]: flt=flt[flt["Job Profile"].str.contains(af["f_jp"],case=False,na=False)]
+    if af["f_jl"]: flt=flt[flt["Job Location"].str.contains(af["f_jl"],case=False,na=False)]
+    if af["f_mn"]: flt=flt[flt["Manager Name"].str.contains(af["f_mn"],case=False,na=False)]
+    if af["f_sp"]: flt=flt[flt["Specialization"].str.contains(af["f_sp"],case=False,na=False)]
+    if af["f_sc"]: flt=flt[flt["School"].str.contains(af["f_sc"],case=False,na=False)]
+    if af["f_pr"]: flt=flt[flt["Program"].str.contains(af["f_pr"],case=False,na=False)]
+    if af["f_re"]: flt=flt[flt["Remarks"].str.contains(af["f_re"],case=False,na=False)]
+    if af["f_st"]: flt=flt[flt["Company Current Status"].isin(af["f_st"])]
+    if af["f_ba"]: flt=flt[flt["Batch"].isin(af["f_ba"])]
+    if af["f_fb"]: flt=flt[flt["Floated By"].isin(af["f_fb"])]
+    if af["f_ot"]: flt=flt[flt["Opportunity Type"].isin(af["f_ot"])]
+    if af["f_cn"]: flt=flt[flt["Core/Non-Core"].isin(af["f_cn"])]
+    if af["f_se"]: flt=flt[flt["Selection Confirmation Email"].isin(af["f_se"])]
+    if af["f_sb"]: flt=flt[flt["Submitted By"].isin(af["f_sb"])]
+    if af["f_fdf"] and "Floated Date" in flt.columns:
+        flt=flt[pd.to_datetime(flt["Floated Date"],errors="coerce")>=pd.Timestamp(af["f_fdf"])]
+    if af["f_fdt"] and "Floated Date" in flt.columns:
+        flt=flt[pd.to_datetime(flt["Floated Date"],errors="coerce")<=pd.Timestamp(af["f_fdt"])]
+    if af["f_idf"] and "Interview Date" in flt.columns:
+        flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")>=pd.Timestamp(af["f_idf"])]
+    if af["f_idt"] and "Interview Date" in flt.columns:
+        flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")<=pd.Timestamp(af["f_idt"])]
     if "No. of Positions" in flt.columns:
-        flt=flt[pd.to_numeric(flt["No. of Positions"],errors="coerce").fillna(0).between(f_pmn,f_pmx)]
+        flt=flt[pd.to_numeric(flt["No. of Positions"],errors="coerce").fillna(0).between(af["f_pmn"],af["f_pmx"])]
     if "Final Selection" in flt.columns:
-        flt=flt[pd.to_numeric(flt["Final Selection"],errors="coerce").fillna(0).between(f_smn,f_smx)]
+        flt=flt[pd.to_numeric(flt["Final Selection"],errors="coerce").fillna(0).between(af["f_smn"],af["f_smx"])]
 
     flt=flt.reset_index(drop=False).rename(columns={"index":"_oi"})
     disp=flt.drop(columns=["_oi"])
@@ -552,6 +584,18 @@ def page_preview(admin_view=False):
             if st.button("❌ Cancel",use_container_width=True):
                 st.session_state.confirm_del=None; st.rerun()
         st.divider()
+
+    # ── Full scrollable table with ALL columns (Excel-style view) ─────────────
+    st.markdown("#### 📊 Full Data Table")
+    st.caption("Scroll right to see all columns. Use the section below to edit/delete.")
+    st.dataframe(disp, use_container_width=True, hide_index=True,
+                 height=min(60 + 35*len(flt), 500))
+
+    st.divider()
+    if not can_modify:
+        return
+
+    st.markdown("#### ✏️ Edit / Delete Entries")
 
     # Columns to show in the table
     SHOW_COLS=[

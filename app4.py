@@ -378,8 +378,22 @@ def user_mgmt_ui(users, singular, save_fn, reserved):
                         users[uname]["password"]=hash_password(pw2)
                         save_fn(users); st.success("Updated!"); st.rerun()
         with c4:
-            if st.button("🗑️ Remove",key=f"rm_{singular}_{uname}"):
-                del users[uname]; save_fn(users); st.success(f"Removed {uname}"); st.rerun()
+            confirm_key = f"confirm_rm_{singular}_{uname}"
+            if st.session_state.get(confirm_key):
+                # Show inline Yes/No
+                st.warning(f"Remove **{ud['name']}**?")
+                y,n = st.columns(2)
+                with y:
+                    if st.button("✅ Yes", key=f"yes_{singular}_{uname}", use_container_width=True, type="primary"):
+                        del users[uname]; save_fn(users)
+                        st.session_state.pop(confirm_key, None)
+                        st.success(f"Removed {ud['name']}"); st.rerun()
+                with n:
+                    if st.button("❌ No", key=f"no_{singular}_{uname}", use_container_width=True):
+                        st.session_state.pop(confirm_key, None); st.rerun()
+            else:
+                if st.button("🗑️ Remove", key=f"rm_{singular}_{uname}", use_container_width=True):
+                    st.session_state[confirm_key] = True; st.rerun()
         st.divider()
 
 def page_manage_managers():

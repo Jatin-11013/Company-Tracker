@@ -436,18 +436,13 @@ def data_entry_form(prefill=None, edit_idx=None):
             cs=["In Process","Cancelled","Hold","Completed","Postponed"]
             company_status=st.selectbox("Company Status *",cs,index=cs.index(p["Company Current Status"]) if p.get("Company Current Status") in cs else 0)
         with c3:
-            _pos_val = str(p.get("No. of Positions","0"))
-            _pos_is_nd = (_pos_val == "Not Described")
-            _pos_default = "Not Described" if _pos_is_nd else "Enter Number"
-            pos_type = st.selectbox("No. of Positions", ["Not Described","Enter Number"],
-                index=0 if _pos_is_nd else 1)
-            if pos_type == "Enter Number":
-                try: _pos_num = int(_pos_val) if not _pos_is_nd else 0
-                except: _pos_num = 0
-                no_pos = st.number_input("Count", min_value=1, step=1, value=max(1,_pos_num), label_visibility="collapsed")
-                no_pos_final = str(no_pos)
-            else:
-                no_pos_final = "Not Described"
+            _pos_val = str(p.get("No. of Positions", "0"))
+            try: _pos_num = int(_pos_val) if _pos_val != "Not Described" else 0
+            except: _pos_num = 0
+            no_pos = st.number_input("No. of Positions (0 = Not Described)", min_value=0, step=1, value=_pos_num)
+            no_pos_final = "Not Described" if no_pos == 0 else str(no_pos)
+            if no_pos == 0:
+                st.caption("0 → Not Described")
         with c4: no_reg=st.number_input("No. of Registrations",min_value=0,step=1,value=int(p.get("No. of Registrations",0) or 0))
         iv=datetime.strptime(p["Interview Date"],"%Y-%m-%d").date() if p.get("Interview Date") else date.today()
         interview_date=st.date_input("Interview Date",value=iv)

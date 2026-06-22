@@ -173,25 +173,34 @@ def push_row(row: dict):
 def is_super_admin(): return st.session_state.get("username") == SUPER_ADMIN_USER
 
 # ── Token helpers (URL query param based session persistence) ─────────────────
-def _make_token(username, role):
-    msg = f"{username}:{role}"
+def _make_token(username, role, page=""):
+    msg = f"{username}:{role}:{page}"
     sig = hmac.new(TOKEN_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()[:16]
-    return f"{username}:{role}:{sig}"
+    return f"{username}:{role}:{page}:{sig}"
 
 def _verify_token(token):
     try:
         parts = token.split(":")
-        if len(parts) != 3: return None, None
-        username, role, sig = parts
-        expected = hmac.new(TOKEN_SECRET.encode(), f"{username}:{role}".encode(), hashlib.sha256).hexdigest()[:16]
+        if len(parts) != 4: return None, None, None
+        username, role, page, sig = parts
+        expected = hmac.new(TOKEN_SECRET.encode(), f"{username}:{role}:{page}".encode(), hashlib.sha256).hexdigest()[:16]
         if hmac.compare_digest(sig, expected):
-            return username, role
+            return username, role, page
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 def _default_page(role):
     return "admin_home" if role in ("super_admin","admin") else "manager_home"
+
+def _update_token():
+    """Call this whenever page changes to keep URL in sync."""
+    if st.session_state.get("logged_in"):
+        st.query_params["t"] = _make_token(
+            st.session_state.username,
+            st.session_state.role,
+            st.session_state.page
+        )
 
 # ── Session state init with auto-restore from URL token ──────────────────────
 for k,v in {"logged_in":False,"role":None,"username":None,"page":"login",
@@ -205,13 +214,12 @@ if not st.session_state._session_restored:
     try:
         token = st.query_params.get("t", "")
         if token:
-            username, role = _verify_token(token)
+            username, role, page = _verify_token(token)
             if username and role:
                 st.session_state.logged_in = True
                 st.session_state.role      = role
                 st.session_state.username  = username
-                if st.session_state.page == "login":
-                    st.session_state.page  = _default_page(role)
+                st.session_state.page      = page if page else _default_page(role)
     except Exception:
         pass
 
@@ -269,18 +277,18 @@ def page_login():
             if st.session_state.login_role == "Admin":
                 if user==SUPER_ADMIN_USER and hash_password(pw)==SUPER_ADMIN_PASS_HASH:
                     st.session_state.update(logged_in=True,role="super_admin",username=user,page="admin_home")
-                    st.query_params["t"] = _make_token(user, "super_admin"); st.rerun()
+                    st.query_params["t"] = _make_token(user, "super_admin", "admin_home"); st.rerun()
                 else:
                     admins=load_admins()
                     if user in admins and admins[user]["password"]==hash_password(pw):
                         st.session_state.update(logged_in=True,role="admin",username=user,page="admin_home")
-                        st.query_params["t"] = _make_token(user, "admin"); st.rerun()
+                        st.query_params["t"] = _make_token(user, "admin", "admin_home"); st.rerun()
                     else: st.error("❌ Invalid admin credentials.")
             else:
                 users=load_users()
                 if user in users and users[user]["password"]==hash_password(pw):
                     st.session_state.update(logged_in=True,role="manager",username=user,page="manager_home")
-                    st.query_params["t"] = _make_token(user, "manager"); st.rerun()
+                    st.query_params["t"] = _make_token(user, "manager", "manager_home"); st.rerun()
                 else: st.error("❌ Invalid manager credentials.")
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
@@ -295,20 +303,20 @@ def render_sidebar():
                               ("manage_managers","👥","Manage Managers"),
                               ("admin_reports","📋","All Reports")]:
                 if st.button(f"{ic} {tx}", use_container_width=True):
-                    st.session_state.page=pg; st.rerun()
+                    st.session_state.page=pg; _update_token(); st.rerun()
             if role=="super_admin":
                 if st.button("🔑 Manage Admins", use_container_width=True):
-                    st.session_state.page="manage_admins"; st.rerun()
+                    st.session_state.page="manage_admins"; _update_token(); st.rerun()
             if st.button("🔄 Refresh Data", use_container_width=True):
                 st.cache_resource.clear()
-                st.success("✅ Refreshed!")
+                st.cache_data.clear()
                 st.rerun()
         else:
             for pg,ic,tx in [("manager_home","🏠","Home"),
                               ("data_entry","➕","New Entry"),
                               ("preview","📋","My Reports")]:
                 if st.button(f"{ic} {tx}", use_container_width=True):
-                    st.session_state.page=pg; st.rerun()
+                    st.session_state.page=pg; _update_token(); st.rerun()
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
             st.query_params.clear()
@@ -497,7 +505,7 @@ def data_entry_form(prefill=None, edit_idx=None):
         if is_edit: data[edit_idx]=row; st.success("✅ Entry updated!")
         else: data.append(row); push_row(row); st.success("✅ Entry submitted!")
         save_data(data)
-        st.session_state.page="preview"; st.session_state.edit_row_idx=None; st.rerun()
+        st.session_state.page="preview"; st.session_state.edit_row_idx=None; _update_token(); st.rerun()
 
 # ─── PREVIEW ──────────────────────────────────────────────────────────────────
 def page_preview(admin_view=False):
@@ -517,7 +525,7 @@ def page_preview(admin_view=False):
         if df.empty:
             st.info("No entries yet.")
             if st.button("➕ Add New Entry",type="primary"):
-                st.session_state.page="data_entry"; st.rerun()
+                st.session_state.page="data_entry"; _update_token(); st.rerun()
             return
 
     with st.expander("🔍 Filter Data", expanded=False):
@@ -708,7 +716,7 @@ def page_preview(admin_view=False):
             with rcols[len(col_names)]:
                 if st.button("✏️",key=f"ed_{oi}",use_container_width=True,type="primary",help="Edit"):
                     st.session_state.edit_row_idx=oi
-                    st.session_state.page="edit_entry"; st.rerun()
+                    st.session_state.page="edit_entry"; _update_token(); st.rerun()
             with rcols[len(col_names)+1]:
                 if st.button("🗑️",key=f"dl_{oi}",use_container_width=True,help="Delete"):
                     st.session_state.confirm_del=oi; st.rerun()
@@ -735,10 +743,10 @@ def page_manager_home():
     c1,c2=st.columns(2)
     with c1:
         if st.button("➕ New Data Entry",use_container_width=True,type="primary"):
-            st.session_state.page="data_entry"; st.rerun()
+            st.session_state.page="data_entry"; _update_token(); st.rerun()
     with c2:
         if st.button("📋 View My Reports",use_container_width=True):
-            st.session_state.page="preview"; st.rerun()
+            st.session_state.page="preview"; _update_token(); st.rerun()
 
 # ─── ROUTER ───────────────────────────────────────────────────────────────────
 def main():
@@ -756,7 +764,7 @@ def main():
     elif pg=="edit_entry":
         idx=st.session_state.edit_row_idx
         if idx is not None: data_entry_form(prefill=load_data()[idx],edit_idx=idx)
-        else: st.session_state.page="preview"; st.rerun()
+        else: st.session_state.page="preview"; _update_token(); st.rerun()
     elif pg=="preview":
         page_preview(admin_view=(role in ("admin","super_admin")))
 

@@ -252,7 +252,7 @@ div[data-testid="stButton"]>button{border-radius:8px;font-weight:600;}
 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 def page_login():
-    st.markdown('<div class="main-header"><h1>🎓 Placement Report System</h1><p>Login to continue</p></div>',
+    st.markdown('<div class="main-header"><h1>🎓 Floated Company Tracking System</h1><p>Login to continue</p></div>',
                 unsafe_allow_html=True)
     if not SHEETS_CONFIGURED:
         st.error("⚠️ Google Sheets not connected. Add credentials in Streamlit Cloud → Settings → Secrets. Data will NOT be saved permanently until this is configured.")

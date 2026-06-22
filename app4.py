@@ -11,7 +11,7 @@ try:
 except ImportError:
     GSPREAD_OK = False
 
-st.set_page_config(page_title="Placement Report System", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="Floated Company Tracking System", page_icon="🎓", layout="wide")
 
 SUPER_ADMIN_USER      = "jatin_123"
 SUPER_ADMIN_PASS_HASH = hashlib.sha256("jatin@123".encode()).hexdigest()

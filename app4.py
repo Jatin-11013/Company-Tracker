@@ -214,6 +214,8 @@ if not st.session_state._session_restored:
                     st.session_state.page  = _default_page(role)
     except Exception:
         pass
+
+def excel_bytes(df):
     b = BytesIO()
     try:
         with pd.ExcelWriter(b, engine="openpyxl") as w:

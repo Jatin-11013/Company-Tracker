@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import json, os, hashlib
+import json, os, hashlib, hmac
 from datetime import datetime, date
 from io import BytesIO
 
@@ -18,99 +18,8 @@ SUPER_ADMIN_PASS_HASH = hashlib.sha256("jatin@123".encode()).hexdigest()
 SCHOOL_OPTIONS        = ["SAHS","SAS","SBS","SBSR","SDAP","SET","SHSS","SMFE","SOE","SSCSE"]
 PROGRAM_OPTIONS       = ["MSc","BSc","MBA","BTech","BPT","MPT","BBA","MCom","BA","MA"]
 PARTICIPATION_ROUNDS  = ["Round 1","Round 2","Round 3","Round 4","Round 5"]
+TOKEN_SECRET          = "placement_app_secret_2024_xK9#mP"
 
-def hash_password(pw): return hashlib.sha256(pw.encode()).hexdigest()
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS — single source of truth (no local JSON dependency)
-# ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_resource(show_spinner=False)
-def _get_client():
-    if not GSPREAD_OK:
-        return None
-    try:
-        creds = Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"]),
-            scopes=["https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive"])
-        return gspread.authorize(creds)
-    except Exception:
-        return None
-
-def _get_spreadsheet():
-    client = _get_client()
-    if not client:
-        return None
-    try:
-        return client.open_by_key(st.secrets["google_sheet"]["sheet_id"])
-    except Exception:
-        return None
-
-def _get_or_create_ws(title, header_row):
-    sh = _get_spreadsheet()
-    if not sh:
-        return None
-    try:
-        ws = sh.worksheet(title)
-    except Exception:
-        ws = sh.add_worksheet(title=title, rows=2000, cols=max(50, len(header_row)+5))
-        ws.append_row(header_row)
-        return ws
-    # ensure header exists
-    existing = ws.get_all_values()
-    if not existing:
-        ws.append_row(header_row)
-    return ws
-
-SHEETS_CONFIGURED = False
-try:
-    SHEETS_CONFIGURED = "gcp_service_account" in st.secrets and "google_sheet" in st.secrets
-except Exception:
-    SHEETS_CONFIGURED = False
-
-# ── MANAGERS worksheet: username | name | password_hash ─────────────────────
-def load_users():
-    ws = _get_or_create_ws("Managers", ["username", "name", "password"])
-    if not ws: return {}
-    try:
-        rows = ws.get_all_records()
-        return {r["username"]: {"name": r["name"], "password": r["password"]} for r in rows if r.get("username")}
-    except Exception:
-        return {}
-
-def save_users(users: dict):
-    ws = _get_or_create_ws("Managers", ["username", "name", "password"])
-    if not ws: return
-    try:
-        ws.clear()
-        ws.append_row(["username", "name", "password"])
-        for uname, d in users.items():
-            ws.append_row([uname, d["name"], d["password"]])
-    except Exception as e:
-        st.warning(f"Could not save managers to Google Sheet: {e}")
-
-# ── ADMINS worksheet: username | name | password_hash ────────────────────────
-def load_admins():
-    ws = _get_or_create_ws("Admins", ["username", "name", "password"])
-    if not ws: return {}
-    try:
-        rows = ws.get_all_records()
-        return {r["username"]: {"name": r["name"], "password": r["password"]} for r in rows if r.get("username")}
-    except Exception:
-        return {}
-
-def save_admins(admins: dict):
-    ws = _get_or_create_ws("Admins", ["username", "name", "password"])
-    if not ws: return
-    try:
-        ws.clear()
-        ws.append_row(["username", "name", "password"])
-        for uname, d in admins.items():
-            ws.append_row([uname, d["name"], d["password"]])
-    except Exception as e:
-        st.warning(f"Could not save admins to Google Sheet: {e}")
-
-# ── PLACEMENT DATA worksheet ──────────────────────────────────────────────────
 DATA_HEADERS = [
     "Manager Name","Floated Date","Floated By","Opportunity Type","Batch",
     "Company Name","Core/Non-Core","Company Domain","Job Profile","Job Location",
@@ -125,8 +34,83 @@ DATA_HEADERS = [
     "Remarks","Submitted By","Submitted At",
 ]
 
+def hash_password(pw): return hashlib.sha256(pw.encode()).hexdigest()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SHEETS — single source of truth with aggressive caching
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.cache_resource(show_spinner=False)
+def _get_client():
+    if not GSPREAD_OK:
+        return None
+    try:
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=["https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"])
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+@st.cache_resource(show_spinner=False)
+def _get_all_worksheets():
+    """Cache the spreadsheet object AND all 3 worksheets at once — 1 API call."""
+    client = _get_client()
+    if not client:
+        return None, None, None, None
+    try:
+        sh = client.open_by_key(st.secrets["google_sheet"]["sheet_id"])
+        titles = [ws.title for ws in sh.worksheets()]
+        def get_or_create(title, headers):
+            if title not in titles:
+                ws = sh.add_worksheet(title=title, rows=2000, cols=max(50, len(headers)+5))
+                ws.append_row(headers)
+            else:
+                ws = sh.worksheet(title)
+            return ws
+        ws_mgr  = get_or_create("Managers",     ["username","name","password"])
+        ws_adm  = get_or_create("Admins",        ["username","name","password"])
+        ws_data = get_or_create("PlacementData", DATA_HEADERS)
+        return sh, ws_mgr, ws_adm, ws_data
+    except Exception:
+        return None, None, None, None
+
+def _ws_mgr():  return _get_all_worksheets()[1]
+def _ws_adm():  return _get_all_worksheets()[2]
+def _ws_data(): return _get_all_worksheets()[3]
+
+SHEETS_CONFIGURED = False
+try:
+    SHEETS_CONFIGURED = "gcp_service_account" in st.secrets and "google_sheet" in st.secrets
+except Exception:
+    SHEETS_CONFIGURED = False
+
+# ── cached reads (TTL=60s — fast for users, fresh enough for data) ────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def load_users():
+    ws = _ws_mgr()
+    if not ws: return {}
+    try:
+        rows = ws.get_all_records()
+        return {r["username"]: {"name": r["name"], "password": r["password"]}
+                for r in rows if r.get("username")}
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_admins():
+    ws = _ws_adm()
+    if not ws: return {}
+    try:
+        rows = ws.get_all_records()
+        return {r["username"]: {"name": r["name"], "password": r["password"]}
+                for r in rows if r.get("username")}
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=30, show_spinner=False)
 def load_data():
-    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+    ws = _ws_data()
     if not ws: return []
     try:
         rows = ws.get_all_records()
@@ -134,38 +118,102 @@ def load_data():
     except Exception:
         return []
 
-def save_data(data: list):
-    """Full rewrite of PlacementData sheet — used for edit/delete."""
-    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+# ── writes always invalidate cache immediately ─────────────────────────────────
+def save_users(users: dict):
+    ws = _ws_mgr()
     if not ws: return
     try:
         ws.clear()
-        if not data:
-            ws.append_row(DATA_HEADERS)
-            return
-        df = pd.DataFrame(data)
-        # ensure all expected headers exist & in correct order
-        for h in DATA_HEADERS:
-            if h not in df.columns:
-                df[h] = ""
-        df = df[DATA_HEADERS]
-        ws.append_row(DATA_HEADERS)
-        ws.append_rows(df.astype(str).values.tolist())
+        ws.append_row(["username","name","password"])
+        if users:
+            ws.append_rows([[u, d["name"], d["password"]] for u, d in users.items()])
+        load_users.clear()
     except Exception as e:
-        st.warning(f"Could not save data to Google Sheet: {e}")
+        st.warning(f"Could not save managers: {e}")
 
-def push_row(row: dict):
-    """Append a single new row (fast path for new entries)."""
-    ws = _get_or_create_ws("PlacementData", DATA_HEADERS)
+def save_admins(admins: dict):
+    ws = _ws_adm()
     if not ws: return
     try:
-        ws.append_row([str(row.get(h, "")) for h in DATA_HEADERS])
+        ws.clear()
+        ws.append_row(["username","name","password"])
+        if admins:
+            ws.append_rows([[u, d["name"], d["password"]] for u, d in admins.items()])
+        load_admins.clear()
     except Exception as e:
-        st.warning(f"Could not push entry to Google Sheet: {e}")
+        st.warning(f"Could not save admins: {e}")
+
+def save_data(data: list):
+    """Full rewrite — used for edit/delete."""
+    ws = _ws_data()
+    if not ws: return
+    try:
+        ws.clear()
+        ws.append_row(DATA_HEADERS)
+        if data:
+            df = pd.DataFrame(data)
+            for h in DATA_HEADERS:
+                if h not in df.columns: df[h] = ""
+            df = df[DATA_HEADERS]
+            ws.append_rows(df.astype(str).values.tolist())
+        load_data.clear()
+    except Exception as e:
+        st.warning(f"Could not save data: {e}")
+
+def push_row(row: dict):
+    """Append single new row — fast path."""
+    ws = _ws_data()
+    if not ws: return
+    try:
+        ws.append_row([str(row.get(h,"")) for h in DATA_HEADERS])
+        load_data.clear()
+    except Exception as e:
+        st.warning(f"Could not push row: {e}")
 
 def is_super_admin(): return st.session_state.get("username") == SUPER_ADMIN_USER
 
-def excel_bytes(df):
+# ── Token helpers (URL query param based session persistence) ─────────────────
+def _make_token(username, role):
+    msg = f"{username}:{role}"
+    sig = hmac.new(TOKEN_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()[:16]
+    return f"{username}:{role}:{sig}"
+
+def _verify_token(token):
+    try:
+        parts = token.split(":")
+        if len(parts) != 3: return None, None
+        username, role, sig = parts
+        expected = hmac.new(TOKEN_SECRET.encode(), f"{username}:{role}".encode(), hashlib.sha256).hexdigest()[:16]
+        if hmac.compare_digest(sig, expected):
+            return username, role
+    except Exception:
+        pass
+    return None, None
+
+def _default_page(role):
+    return "admin_home" if role in ("super_admin","admin") else "manager_home"
+
+# ── Session state init with auto-restore from URL token ──────────────────────
+for k,v in {"logged_in":False,"role":None,"username":None,"page":"login",
+            "edit_row_idx":None,"login_role":"Manager","confirm_del":None,
+            "active_filters":None,"_session_restored":False}.items():
+    if k not in st.session_state: st.session_state[k] = v
+
+# Restore session from URL token on refresh (only once per session)
+if not st.session_state._session_restored:
+    st.session_state._session_restored = True
+    try:
+        token = st.query_params.get("t", "")
+        if token:
+            username, role = _verify_token(token)
+            if username and role:
+                st.session_state.logged_in = True
+                st.session_state.role      = role
+                st.session_state.username  = username
+                if st.session_state.page == "login":
+                    st.session_state.page  = _default_page(role)
+    except Exception:
+        pass
     b = BytesIO()
     try:
         with pd.ExcelWriter(b, engine="openpyxl") as w:
@@ -218,16 +266,19 @@ def page_login():
             if not user or not pw: st.error("Fill both fields."); return
             if st.session_state.login_role == "Admin":
                 if user==SUPER_ADMIN_USER and hash_password(pw)==SUPER_ADMIN_PASS_HASH:
-                    st.session_state.update(logged_in=True,role="super_admin",username=user,page="admin_home"); st.rerun()
+                    st.session_state.update(logged_in=True,role="super_admin",username=user,page="admin_home")
+                    st.query_params["t"] = _make_token(user, "super_admin"); st.rerun()
                 else:
                     admins=load_admins()
                     if user in admins and admins[user]["password"]==hash_password(pw):
-                        st.session_state.update(logged_in=True,role="admin",username=user,page="admin_home"); st.rerun()
+                        st.session_state.update(logged_in=True,role="admin",username=user,page="admin_home")
+                        st.query_params["t"] = _make_token(user, "admin"); st.rerun()
                     else: st.error("❌ Invalid admin credentials.")
             else:
                 users=load_users()
                 if user in users and users[user]["password"]==hash_password(pw):
-                    st.session_state.update(logged_in=True,role="manager",username=user,page="manager_home"); st.rerun()
+                    st.session_state.update(logged_in=True,role="manager",username=user,page="manager_home")
+                    st.query_params["t"] = _make_token(user, "manager"); st.rerun()
                 else: st.error("❌ Invalid manager credentials.")
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
@@ -258,6 +309,7 @@ def render_sidebar():
                     st.session_state.page=pg; st.rerun()
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
+            st.query_params.clear()
             for k in list(st.session_state.keys()): del st.session_state[k]
             st.rerun()
 
@@ -381,7 +433,19 @@ def data_entry_form(prefill=None, edit_idx=None):
         with c2:
             cs=["In Process","Cancelled","Hold","Completed","Postponed"]
             company_status=st.selectbox("Company Status *",cs,index=cs.index(p["Company Current Status"]) if p.get("Company Current Status") in cs else 0)
-        with c3: no_pos=st.number_input("No. of Positions",min_value=0,step=1,value=int(p.get("No. of Positions",0) or 0))
+        with c3:
+            _pos_val = str(p.get("No. of Positions","0"))
+            _pos_is_nd = (_pos_val == "Not Described")
+            _pos_default = "Not Described" if _pos_is_nd else "Enter Number"
+            pos_type = st.selectbox("No. of Positions", ["Not Described","Enter Number"],
+                index=0 if _pos_is_nd else 1)
+            if pos_type == "Enter Number":
+                try: _pos_num = int(_pos_val) if not _pos_is_nd else 0
+                except: _pos_num = 0
+                no_pos = st.number_input("Count", min_value=1, step=1, value=max(1,_pos_num), label_visibility="collapsed")
+                no_pos_final = str(no_pos)
+            else:
+                no_pos_final = "Not Described"
         with c4: no_reg=st.number_input("No. of Registrations",min_value=0,step=1,value=int(p.get("No. of Registrations",0) or 0))
         iv=datetime.strptime(p["Interview Date"],"%Y-%m-%d").date() if p.get("Interview Date") else date.today()
         interview_date=st.date_input("Interview Date",value=iv)
@@ -421,7 +485,7 @@ def data_entry_form(prefill=None, edit_idx=None):
             "Job Profile":job_profile,"Job Location":job_location,
             "School":", ".join(schools),"Program":", ".join(programs),
             "Specialization":specialization,"CTC (LPA)":f"{ctc:.2f} LPA",
-            "Company Current Status":company_status,"No. of Positions":no_pos,
+            "Company Current Status":company_status,"No. of Positions":no_pos_final,
             "No. of Registrations":no_reg,"Interview Date":str(interview_date),
             **parts,**shorts,
             "Selection Confirmation Email":sel_email,"Final Selection":final_sel,
@@ -551,8 +615,8 @@ def page_preview(admin_view=False):
         flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")>=pd.Timestamp(af["f_idf"])]
     if af["f_idt"] and "Interview Date" in flt.columns:
         flt=flt[pd.to_datetime(flt["Interview Date"],errors="coerce")<=pd.Timestamp(af["f_idt"])]
-    if "No. of Positions" in flt.columns:
-        flt=flt[pd.to_numeric(flt["No. of Positions"],errors="coerce").fillna(0).between(af["f_pmn"],af["f_pmx"])]
+    if "No. of Positions" in flt.columns and (af["f_pmn"] > 0 or af["f_pmx"] < 99999):
+        flt=flt[flt["No. of Positions"].apply(lambda x: pd.to_numeric(x,errors="coerce") if x!="Not Described" else None).between(af["f_pmn"],af["f_pmx"])]
     if "Final Selection" in flt.columns:
         flt=flt[pd.to_numeric(flt["Final Selection"],errors="coerce").fillna(0).between(af["f_smn"],af["f_smx"])]
 
